@@ -18,15 +18,36 @@ A [pi coding agent](https://pi.ai) extension that gives you a live TUI dashboard
 
 ## Installation
 
+### One-liner (recommended)
+
 ```bash
-git clone <repo-url> ~/pi-command-center
-cd ~/pi-command-center
-bash install.sh
+curl -fsSL https://raw.githubusercontent.com/DanGreinke/pi-command-center/main/install.sh | bash
 ```
 
-Restart pi. Both extensions load automatically on next start.
+This clones the repo to `~/pi-command-center` and symlinks both extension files into `~/.pi/agent/extensions/`. Restart pi and both extensions load automatically.
 
-To update after a `git pull`, no re-install is needed — the symlinks pick up changes immediately (a pi restart is still required).
+### Manual
+
+```bash
+git clone https://github.com/DanGreinke/pi-command-center.git ~/pi-command-center
+cd ~/pi-command-center && bash install.sh
+```
+
+### Updating
+
+```bash
+cd ~/pi-command-center && git pull
+```
+
+The symlinks pick up changes immediately — no re-install needed. Restart pi to reload the extensions.
+
+### Custom install location
+
+Set `PI_CC_DIR` to override the default `~/pi-command-center`:
+
+```bash
+PI_CC_DIR=~/code/pi-command-center curl -fsSL https://raw.githubusercontent.com/DanGreinke/pi-command-center/main/install.sh | bash
+```
 
 ## Usage
 
