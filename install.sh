@@ -24,7 +24,7 @@ fi
 
 mkdir -p "$DEST"
 
-for file in cc-reporter.ts command-center.ts; do
+for file in cc-reporter.ts command-center.ts cc-supervisor.ts; do
   target="$DEST/$file"
   if [ -e "$target" ] && [ ! -L "$target" ]; then
     echo "Backing up existing $target to $target.bak"
