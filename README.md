@@ -1,6 +1,6 @@
 # pi-command-center
 
-A [pi coding agent](https://pi.dev/) extension that gives you a live TUI dashboard of all your running agents across tmux panes and windows.
+A [pi coding agent](https://pi.dev/) extension that gives you a live TUI dashboard of all your running agents across tmux panes and windows, plus a supervisor agent that can observe and delegate to them.
 
 ## Features
 
@@ -9,10 +9,11 @@ A [pi coding agent](https://pi.dev/) extension that gives you a live TUI dashboa
 - Auto-refreshes every 5 seconds
 - Navigate cards with arrow keys; press Enter to jump to that agent's tmux pane/window
 - Associate a Jira ticket with any workspace via `/cc-ticket PROJ-123`
+- **Supervisor agent** — chat with a dedicated pi session that can see all agents and send them instructions
 
 ## Requirements
 
-- [pi coding agent](https://pi.ai) with extension support
+- [pi coding agent](https://pi.dev/) with extension support
 - tmux (for pane/window navigation)
 - `gh` CLI (optional — for PR display)
 
@@ -24,7 +25,7 @@ A [pi coding agent](https://pi.dev/) extension that gives you a live TUI dashboa
 curl -fsSL https://raw.githubusercontent.com/DanGreinke/pi-command-center/main/install.sh | bash
 ```
 
-This clones the repo to `~/pi-command-center` and symlinks both extension files into `~/.pi/agent/extensions/`. Restart pi and both extensions load automatically.
+This clones the repo to `~/pi-command-center` and symlinks all extension files into `~/.pi/agent/extensions/`. Restart pi and the extensions load automatically.
 
 ### Manual
 
@@ -51,7 +52,9 @@ PI_CC_DIR=~/code/pi-command-center curl -fsSL https://raw.githubusercontent.com/
 
 ## Usage
 
-Both files must be installed. `cc-reporter.ts` runs silently in every pi instance and writes state to `~/.pi/agent/cc-state/`. `command-center.ts` reads that state and renders the TUI.
+### Dashboard (`/cc`)
+
+Open the command center overlay from any pi session:
 
 | Command | Effect |
 |---|---|
@@ -59,7 +62,7 @@ Both files must be installed. `cc-reporter.ts` runs silently in every pi instanc
 | `/cc-ticket PROJ-123` | Associate a Jira ticket with the current workspace |
 | `/cc-ticket` | Clear the Jira ticket for the current workspace |
 
-### Keyboard shortcuts (inside `/cc`)
+#### Keyboard shortcuts (inside `/cc`)
 
 | Key | Action |
 |---|---|
@@ -68,8 +71,30 @@ Both files must be installed. `cc-reporter.ts` runs silently in every pi instanc
 | `r` | Refresh data immediately |
 | `q` / `Esc` | Close the command center |
 
+### Supervisor agent
+
+Open a dedicated pi session in its own tmux pane to act as a supervisor. It has access to three tools the model can call:
+
+| Tool | What it does |
+|---|---|
+| `list_agents` | Summarize all running agent sessions — workspace, branch, status, Jira ticket, last activity |
+| `get_agent_detail` | Full state for a specific workspace |
+| `send_to_agent` | Inject a message into another agent's chat as a user turn |
+
+**Example prompts in the supervisor session:**
+
+- *"What is everyone working on right now?"*
+- *"Tell the change-calculator agent to write unit tests for the core module"*
+- *"Summarize the status of all agents and flag anything that looks stuck"*
+
+When `send_to_agent` is called, the message is written to a per-workspace inbox file. The target agent's `cc-reporter` picks it up within 500ms and injects it as a new user turn — queued after the current task if the agent is busy.
+
 ## How it works
 
-`cc-reporter.ts` is a companion extension installed in every pi instance. It listens to pi lifecycle events (`session_start`, `turn_start`, `turn_end`, etc.) and writes a JSON state file to `~/.pi/agent/cc-state/<workspace>.json` after each event. A separate config file in `~/.pi/agent/cc-config/` stores the Jira ticket association and survives agent restarts.
+Three extension files are installed:
 
-`command-center.ts` registers the `/cc` command. When opened, it reads all state files, cross-references live tmux panes (to pick up non-pi terminals as "orphan" cards), fetches open PRs via `gh`, and renders the dashboard.
+**`cc-reporter.ts`** runs silently in every pi instance. It listens to pi lifecycle events (`session_start`, `turn_start`, `turn_end`, etc.) and writes a JSON state file to `~/.pi/agent/cc-state/<workspace>.json`. It also polls `~/.pi/agent/cc-inbox/<workspace>.json` every 500ms for incoming supervisor commands, injecting any found message as a user turn via `pi.sendUserMessage()`. A separate config file in `~/.pi/agent/cc-config/` stores the Jira ticket association and survives agent restarts.
+
+**`command-center.ts`** registers the `/cc` command. When opened, it reads all state files, cross-references live tmux panes (to pick up non-pi terminals as "orphan" cards), fetches open PRs via `gh`, and renders the full-screen dashboard.
+
+**`cc-supervisor.ts`** registers the `list_agents`, `get_agent_detail`, and `send_to_agent` tools in every pi session. These are most useful in a dedicated supervisor session but are available everywhere.
