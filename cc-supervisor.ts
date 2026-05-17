@@ -17,6 +17,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
+import { Type } from "typebox";
 
 const CC_STATE_DIR = join(homedir(), ".pi/agent/cc-state");
 const CC_INBOX_DIR = join(homedir(), ".pi/agent/cc-inbox");
@@ -44,8 +45,7 @@ function readAllStates(): any[] {
 
 function relativeTime(isoStr: string): string {
   if (!isoStr) return "unknown";
-  const diffMs = Date.now() - new Date(isoStr).getTime();
-  const secs = Math.floor(Math.abs(diffMs) / 1000);
+  const secs = Math.floor(Math.abs(Date.now() - new Date(isoStr).getTime()) / 1000);
   if (secs < 60) return `${secs}s ago`;
   const mins = Math.floor(secs / 60);
   if (mins < 60) return `${mins}m ago`;
@@ -53,23 +53,22 @@ function relativeTime(isoStr: string): string {
 }
 
 export default function ccSupervisorExtension(pi: ExtensionAPI) {
-  pi.registerTool(
-    "list_agents",
-    {
-      description:
-        "List all running pi agent sessions with their current status, branch, Jira ticket, and most recent activity summary. Call this to get an overview of what all agents are working on.",
-      parameters: {
-        type: "object",
-        properties: {},
-        required: [],
-      },
-    },
-    async () => {
+  pi.registerTool({
+    name: "list_agents",
+    label: "List Agents",
+    description:
+      "List all running pi agent sessions with their current status, branch, Jira ticket, and most recent activity summary. Call this to get an overview of what all agents are working on.",
+    parameters: Type.Object({}),
+
+    async execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {
       const states = readAllStates();
       if (states.length === 0) {
-        return "No agent sessions are currently running.";
+        return {
+          content: [{ type: "text" as const, text: "No agent sessions are currently running." }],
+          details: [],
+        };
       }
-      return states.map((s) => ({
+      const summaries = states.map((s) => ({
         workspace: s.workspace,
         branch: s.branch || "(none)",
         status: s.isStreaming ? "busy" : "idle",
@@ -77,32 +76,31 @@ export default function ccSupervisorExtension(pi: ExtensionAPI) {
         jiraTicket: s.jiraTicket ?? null,
         summary: s.lastSummary || "(no summary yet)",
       }));
-    },
-  );
-
-  pi.registerTool(
-    "get_agent_detail",
-    {
-      description:
-        "Get full details for a specific agent session, including its last activity summary. Use list_agents first to get the exact workspace path.",
-      parameters: {
-        type: "object",
-        properties: {
-          workspace: {
-            type: "string",
-            description: "Absolute path to the agent's workspace directory (from list_agents)",
-          },
-        },
-        required: ["workspace"],
-      },
-    },
-    async ({ workspace }: { workspace: string }) => {
-      const states = readAllStates();
-      const state = states.find((s) => s.workspace === workspace);
-      if (!state) {
-        return `No running agent found for workspace: ${workspace}`;
-      }
       return {
+        content: [{ type: "text" as const, text: JSON.stringify(summaries, null, 2) }],
+        details: summaries,
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "get_agent_detail",
+    label: "Get Agent Detail",
+    description:
+      "Get full details for a specific agent session. Use list_agents first to get the exact workspace path.",
+    parameters: Type.Object({
+      workspace: Type.String({ description: "Absolute path to the agent's workspace directory (from list_agents)" }),
+    }),
+
+    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+      const state = readAllStates().find((s) => s.workspace === params.workspace);
+      if (!state) {
+        return {
+          content: [{ type: "text" as const, text: `No running agent found for workspace: ${params.workspace}` }],
+          details: null,
+        };
+      }
+      const detail = {
         workspace: state.workspace,
         branch: state.branch || "(none)",
         status: state.isStreaming ? "busy" : "idle",
@@ -111,43 +109,49 @@ export default function ccSupervisorExtension(pi: ExtensionAPI) {
         summary: state.lastSummary || "(no summary yet)",
         sessionId: state.sessionId,
       };
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(detail, null, 2) }],
+        details: detail,
+      };
     },
-  );
+  });
 
-  pi.registerTool(
-    "send_to_agent",
-    {
-      description:
-        "Send a message to a specific agent's pi session. The message is injected as a user turn — the agent will receive and respond to it as if the user had typed it. If the agent is currently busy, the message is queued and delivered after it finishes. Use list_agents first to get the workspace path.",
-      parameters: {
-        type: "object",
-        properties: {
-          workspace: {
-            type: "string",
-            description: "Absolute path to the agent's workspace directory (from list_agents)",
-          },
-          message: {
-            type: "string",
-            description: "The message to send to the agent",
-          },
-        },
-        required: ["workspace", "message"],
-      },
-    },
-    async ({ workspace, message }: { workspace: string; message: string }) => {
+  pi.registerTool({
+    name: "send_to_agent",
+    label: "Send to Agent",
+    description:
+      "Send a message to a specific agent's pi session. The message is injected as a user turn — the agent will receive and respond to it as if the user had typed it. If the agent is currently busy, the message is queued and delivered after it finishes. Use list_agents first to get the workspace path.",
+    parameters: Type.Object({
+      workspace: Type.String({ description: "Absolute path to the agent's workspace directory (from list_agents)" }),
+      message: Type.String({ description: "The message to send to the agent" }),
+    }),
+
+    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
       const states = readAllStates();
-      const state = states.find((s) => s.workspace === workspace);
+      const state = states.find((s) => s.workspace === params.workspace);
       if (!state) {
-        return `No running agent found for workspace: ${workspace}. Use list_agents to see available workspaces.`;
+        return {
+          content: [{ type: "text" as const, text: `No running agent found for workspace: ${params.workspace}. Use list_agents to see available workspaces.` }],
+          details: { success: false },
+        };
       }
       try {
         mkdirSync(CC_INBOX_DIR, { recursive: true });
-        const inboxPath = join(CC_INBOX_DIR, workspaceKey(workspace) + ".json");
-        writeFileSync(inboxPath, JSON.stringify({ message, timestamp: new Date().toISOString(), from: "supervisor" }));
-        return `Message delivered to agent at ${workspace}${state.isStreaming ? " (agent is busy — message queued for after current task)" : ""}.`;
+        writeFileSync(
+          join(CC_INBOX_DIR, workspaceKey(params.workspace) + ".json"),
+          JSON.stringify({ message: params.message, timestamp: new Date().toISOString(), from: "supervisor" }),
+        );
+        const queued = state.isStreaming ? " (agent is busy — message queued)" : "";
+        return {
+          content: [{ type: "text" as const, text: `Message delivered to agent at ${params.workspace}${queued}.` }],
+          details: { success: true, queued: state.isStreaming },
+        };
       } catch (err: any) {
-        return `Failed to deliver message: ${err?.message ?? err}`;
+        return {
+          content: [{ type: "text" as const, text: `Failed to deliver message: ${err?.message ?? err}` }],
+          details: { success: false },
+        };
       }
     },
-  );
+  });
 }
