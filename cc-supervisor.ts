@@ -11,19 +11,30 @@
  *   list_agents        — Summarize all running agent sessions
  *   get_agent_detail   — Full state for one agent
  *   send_to_agent      — Inject a message into an agent's chat as a user turn
+ *   spawn_agent        — Create a new tmux window running pi in a given workspace
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { spawnSync } from "child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
-import { join } from "path";
+import { basename, join } from "path";
 import { Type } from "typebox";
 
 const CC_STATE_DIR = join(homedir(), ".pi/agent/cc-state");
 const CC_INBOX_DIR = join(homedir(), ".pi/agent/cc-inbox");
+const STALE_STREAMING_MS = 2 * 60 * 1000; // mirror cc-reporter's staleness threshold
 
 function workspaceKey(cwd: string): string {
   return cwd.replace(/^\//, "").replace(/\//g, "_");
+}
+
+function isActuallyStreaming(state: any): boolean {
+  return (
+    state.isStreaming &&
+    !!state.lastActivity &&
+    Date.now() - new Date(state.lastActivity).getTime() < STALE_STREAMING_MS
+  );
 }
 
 function readAllStates(): any[] {
@@ -71,7 +82,7 @@ export default function ccSupervisorExtension(pi: ExtensionAPI) {
       const summaries = states.map((s) => ({
         workspace: s.workspace,
         branch: s.branch || "(none)",
-        status: s.isStreaming ? "busy" : "idle",
+        status: isActuallyStreaming(s) ? "busy" : "idle",
         lastActive: relativeTime(s.lastActivity),
         jiraTicket: s.jiraTicket ?? null,
         summary: s.lastSummary || "(no summary yet)",
@@ -103,7 +114,7 @@ export default function ccSupervisorExtension(pi: ExtensionAPI) {
       const detail = {
         workspace: state.workspace,
         branch: state.branch || "(none)",
-        status: state.isStreaming ? "busy" : "idle",
+        status: isActuallyStreaming(state) ? "busy" : "idle",
         lastActive: relativeTime(state.lastActivity),
         jiraTicket: state.jiraTicket ?? null,
         summary: state.lastSummary || "(no summary yet)",
@@ -141,10 +152,13 @@ export default function ccSupervisorExtension(pi: ExtensionAPI) {
           join(CC_INBOX_DIR, workspaceKey(params.workspace) + ".json"),
           JSON.stringify({ message: params.message, timestamp: new Date().toISOString(), from: "supervisor" }),
         );
-        const queued = state.isStreaming ? " (agent is busy — message queued)" : "";
+        const busy = isActuallyStreaming(state);
+        const status = busy
+          ? "Agent is currently busy — message will be delivered after its current task finishes."
+          : "Message queued for delivery (arrives within ~500ms).";
         return {
-          content: [{ type: "text" as const, text: `Message delivered to agent at ${params.workspace}${queued}.` }],
-          details: { success: true, queued: state.isStreaming },
+          content: [{ type: "text" as const, text: `Message sent to agent at ${params.workspace}. ${status}` }],
+          details: { success: true, queued: busy },
         };
       } catch (err: any) {
         return {
@@ -152,6 +166,63 @@ export default function ccSupervisorExtension(pi: ExtensionAPI) {
           details: { success: false },
         };
       }
+    },
+  });
+
+  pi.registerTool({
+    name: "spawn_agent",
+    label: "Spawn Agent",
+    description:
+      "Create a new tmux window running a pi agent in the given workspace directory. " +
+      "Waits up to 10s for the agent to confirm it started. " +
+      "After spawning, use send_to_agent to give it an initial task. " +
+      "Requires the supervisor to be running inside tmux.",
+    parameters: Type.Object({
+      workspace: Type.String({ description: "Absolute path to an existing directory to run pi in" }),
+      windowName: Type.Optional(Type.String({ description: "Tmux window name (defaults to the directory basename)" })),
+    }),
+
+    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+      if (!process.env.TMUX) {
+        return {
+          content: [{ type: "text" as const, text: "Not running inside tmux — cannot spawn a window." }],
+          details: { success: false },
+        };
+      }
+      if (!existsSync(params.workspace)) {
+        return {
+          content: [{ type: "text" as const, text: `Workspace does not exist: ${params.workspace}` }],
+          details: { success: false },
+        };
+      }
+
+      const name = params.windowName ?? basename(params.workspace);
+      const result = spawnSync("tmux", ["new-window", "-c", params.workspace, "-n", name, "pi"], { timeout: 5000 });
+      if (result.status !== 0) {
+        const err = result.stderr?.toString().trim() || "unknown error";
+        return {
+          content: [{ type: "text" as const, text: `Failed to spawn tmux window: ${err}` }],
+          details: { success: false },
+        };
+      }
+
+      // Poll cc-state for up to 10s waiting for cc-reporter to register the new session
+      const expectedPath = join(CC_STATE_DIR, workspaceKey(params.workspace) + ".json");
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline) {
+        if (existsSync(expectedPath)) {
+          return {
+            content: [{ type: "text" as const, text: `Agent ready in: ${params.workspace}` }],
+            details: { success: true, workspace: params.workspace, confirmed: true },
+          };
+        }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+
+      return {
+        content: [{ type: "text" as const, text: `Pi is starting in ${params.workspace} — call list_agents in a few seconds to confirm.` }],
+        details: { success: true, workspace: params.workspace, confirmed: false },
+      };
     },
   });
 }
