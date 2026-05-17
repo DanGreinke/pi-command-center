@@ -13,9 +13,9 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execSync } from "child_process";
-import { existsSync, mkdirSync, readFileSync, unlinkSync, watch, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
-import { basename, join } from "path";
+import { join } from "path";
 
 function getTmuxWindowId(): string | undefined {
   try {
@@ -128,7 +128,7 @@ function extractLastSummary(messages: any[]): string {
 
 export default function ccReporterExtension(pi: ExtensionAPI) {
   let state: CCState | null = null;
-  let inboxWatcher: ReturnType<typeof watch> | null = null;
+  let inboxPoller: ReturnType<typeof setInterval> | null = null;
 
   function writeState() {
     if (!state) return;
@@ -169,23 +169,15 @@ export default function ccReporterExtension(pi: ExtensionAPI) {
     };
     writeState();
 
-    // Watch for commands from the supervisor agent
+    // Poll for commands from the supervisor agent
     mkdirSync(CC_INBOX_DIR, { recursive: true });
-    const inboxFilename = workspaceKey(cwd) + ".json";
-    const inboxPath = join(CC_INBOX_DIR, inboxFilename);
+    const inboxPath = join(CC_INBOX_DIR, workspaceKey(cwd) + ".json");
 
-    // Process any message left in the inbox (e.g. from a previous crashed session)
-    processInbox(inboxPath);
-
-    inboxWatcher = watch(CC_INBOX_DIR, (_eventType, filename) => {
-      if (filename !== inboxFilename) return;
-      processInbox(inboxPath);
-    });
-
-    function processInbox(path: string) {
+    function processInbox() {
+      if (!existsSync(inboxPath)) return;
       try {
-        const raw = readFileSync(path, "utf8");
-        unlinkSync(path); // consume before injecting to prevent double-fire
+        const raw = readFileSync(inboxPath, "utf8");
+        unlinkSync(inboxPath); // consume before injecting to prevent double-delivery
         const { message } = JSON.parse(raw);
         if (typeof message === "string" && message.trim()) {
           pi.sendUserMessage(message, {
@@ -193,9 +185,12 @@ export default function ccReporterExtension(pi: ExtensionAPI) {
           });
         }
       } catch {
-        // File absent or already consumed — ignore
+        // File already consumed by a concurrent poll tick — ignore
       }
     }
+
+    processInbox(); // handle anything left from a previous crashed session
+    inboxPoller = setInterval(processInbox, 500);
   });
 
   pi.on("agent_start", async (_event, ctx) => {
@@ -232,8 +227,8 @@ export default function ccReporterExtension(pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async (_event, _ctx) => {
-    inboxWatcher?.close();
-    inboxWatcher = null;
+    if (inboxPoller) clearInterval(inboxPoller);
+    inboxPoller = null;
     deleteState();
     state = null;
   });
