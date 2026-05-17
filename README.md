@@ -1,6 +1,6 @@
 # pi-command-center
 
-A [pi coding agent](https://pi.ai) extension that gives you a live TUI dashboard of all your running agents across tmux panes and windows.
+A [pi coding agent](https://pi.dev/) extension that gives you a live TUI dashboard of all your running agents across tmux panes and windows.
 
 ## Features
 
