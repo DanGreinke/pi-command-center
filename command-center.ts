@@ -34,6 +34,7 @@ interface CCState {
   workspace: string;
   branch: string;
   repoRoot: string;
+  repoName: string;
   sessionId: string;
   sessionName: string | undefined;
   isStreaming: boolean;
@@ -71,8 +72,6 @@ interface AgentInfo {
   remoteSha: string;
   localSha: string;
 }
-
-// --- Data collection (unchanged from original) ---
 
 function readStateFiles(): CCState[] {
   if (!existsSync(CC_STATE_DIR)) return [];
@@ -130,6 +129,17 @@ function getRepoRoot(dir: string): string {
     return execSync("git rev-parse --show-toplevel", { cwd: dir, encoding: "utf8", timeout: 2000, stdio: "pipe" }).trim();
   } catch {
     return dir;
+  }
+}
+
+function getRepoName(dir: string): string {
+  try {
+    const out = execSync("git worktree list --porcelain", { cwd: dir, encoding: "utf8", timeout: 2000, stdio: "pipe" });
+    const firstWorktreeLine = out.split("\n").find((l) => l.startsWith("worktree "));
+    if (firstWorktreeLine) return basename(firstWorktreeLine.slice("worktree ".length).trim());
+    return basename(getRepoRoot(dir));
+  } catch {
+    return basename(dir);
   }
 }
 
@@ -206,7 +216,7 @@ function buildAgentList(): AgentInfo[] {
       workspace: state.workspace,
       branch: state.branch,
       repoRoot: state.repoRoot,
-      repoName: basename(state.repoRoot),
+      repoName: state.repoName ?? getRepoName(state.workspace),
       sessionId: state.sessionId,
       sessionName: state.sessionName,
       isStreaming: state.isStreaming,
@@ -233,7 +243,7 @@ function buildAgentList(): AgentInfo[] {
         workspace: pane.path,
         branch,
         repoRoot: root,
-        repoName: basename(root),
+        repoName: getRepoName(pane.path),
         sessionId: "",
         sessionName: undefined,
         isStreaming: false,
@@ -288,7 +298,9 @@ function truncate(text: string, maxWidth: number): string {
 
 function padLine(line: string, targetWidth: number): string {
   const vw = visibleWidth(line);
-  return vw < targetWidth ? line + " ".repeat(targetWidth - vw) : line;
+  if (vw < targetWidth) return line + " ".repeat(targetWidth - vw);
+  if (vw > targetWidth) return truncate(line, targetWidth);
+  return line;
 }
 
 function stripMarkdown(text: string): string {
@@ -329,8 +341,7 @@ function commitsAheadStyleFn(n: number): ((s: string) => string) | undefined {
 
 function getCardRows(agent: AgentInfo): CardRow[] {
   const rows: CardRow[] = [];
-  rows.push({ label: "Workspace", value: agent.workspace.replace(homedir(), "~") });
-  if (agent.branch) rows.push({ label: "Branch", value: agent.branch });
+  rows.push({ label: "Worktree", value: basename(agent.workspace) });
   if (agent.lastRemoteCommit) rows.push({ label: "Last push", value: agent.lastRemoteCommit });
   if (agent.commitsAhead !== null) {
     const count = agent.commitsAhead === 0 ? "up to date" : `${agent.commitsAhead} commit${agent.commitsAhead !== 1 ? "s" : ""} ahead`;
@@ -363,17 +374,18 @@ function renderCard(agent: AgentInfo, theme: any, width: number, isSelected: boo
     !!agent.lastActivity &&
     Date.now() - new Date(agent.lastActivity).getTime() < STALE_STREAMING_MS;
 
-  // --- Top border with inline status + branch ---
+  // --- Top border with inline status + repo (branch) ---
   const statusText = agent.isOrphan
     ? "  "
     : isActuallyStreaming
     ? theme.fg("warning", "● busy ")
     : theme.fg("success", "○ idle ");
-  const branchText = agent.branch
-    ? isSelected ? theme.bold(agent.branch) : agent.branch
-    : theme.fg("muted", "(no branch)");
+  const headerLabel = agent.repoName
+    ? agent.branch ? `${agent.repoName} (${agent.branch})` : agent.repoName
+    : agent.branch || "(no branch)";
+  const headerText = isSelected ? theme.bold(headerLabel) : headerLabel;
 
-  const headerInner = " " + statusText + branchText + " ";
+  const headerInner = " " + statusText + headerText + " ";
   const dashCount = Math.max(0, innerWidth - visibleWidth(headerInner));
   lines.push(styleBorder("┌") + headerInner + styleBorder("─".repeat(dashCount)) + styleBorder("┐"));
 

@@ -15,7 +15,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execSync } from "child_process";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
-import { join } from "path";
+import { basename, join } from "path";
 
 function getTmuxWindowId(): string | undefined {
   try {
@@ -34,6 +34,7 @@ interface CCState {
   workspace: string;
   branch: string;
   repoRoot: string;
+  repoName: string;
   sessionId: string;
   sessionName: string | undefined;
   isStreaming: boolean;
@@ -84,6 +85,17 @@ function getRepoRoot(cwd: string): string {
     return execSync("git rev-parse --show-toplevel", { cwd, encoding: "utf8", timeout: 2000, stdio: "pipe" }).trim();
   } catch {
     return cwd;
+  }
+}
+
+function getRepoName(cwd: string): string {
+  try {
+    const out = execSync("git worktree list --porcelain", { cwd, encoding: "utf8", timeout: 2000, stdio: "pipe" });
+    const firstWorktreeLine = out.split("\n").find((l) => l.startsWith("worktree "));
+    if (firstWorktreeLine) return basename(firstWorktreeLine.slice("worktree ".length).trim());
+    return basename(getRepoRoot(cwd));
+  } catch {
+    return basename(cwd);
   }
 }
 
@@ -158,6 +170,7 @@ export default function ccReporterExtension(pi: ExtensionAPI) {
       workspace: cwd,
       branch: getBranch(cwd),
       repoRoot: getRepoRoot(cwd),
+      repoName: getRepoName(cwd),
       sessionId: ctx.sessionManager.getSessionId() ?? "",
       sessionName: pi.getSessionName(),
       isStreaming: false,
@@ -190,6 +203,7 @@ export default function ccReporterExtension(pi: ExtensionAPI) {
     }
 
     processInbox(); // handle anything left from a previous crashed session
+    if (inboxPoller) clearInterval(inboxPoller); // guard against re-entrant session_start
     inboxPoller = setInterval(processInbox, 500);
   });
 
